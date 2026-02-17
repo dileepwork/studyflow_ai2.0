@@ -1,25 +1,26 @@
 import pypdf
 import re
-import spacy
+import os
+import json
 
-nlp = None
+# Lazy import to avoid cold start issues
+gemini_model = None
 
-def load_nlp():
-    global nlp
-    if nlp is None:
+def get_gemini():
+    global gemini_model
+    if gemini_model is None:
         try:
-            nlp = spacy.load("en_core_web_sm")
-        except OSError:
-            # If not linked, try importing as module (standard for pip install)
-            try:
-                import en_core_web_sm
-                nlp = en_core_web_sm.load()
-            except ImportError:
-                # Last resort: try to download (may fail in serverless)
-                import os
-                os.system("python -m spacy download en_core_web_sm")
-                nlp = spacy.load("en_core_web_sm")
-    return nlp
+            import google.generativeai as genai
+            api_key = os.environ.get('GEMINI_API_KEY')
+            if not api_key:
+                raise ValueError("GEMINI_API_KEY environment variable not set")
+            genai.configure(api_key=api_key)
+            gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+            print("✅ Gemini model loaded successfully")
+        except Exception as e:
+            print(f"❌ Failed to load Gemini: {str(e)}")
+            raise
+    return gemini_model
 
 def extract_text_from_pdf(pdf_path):
     text = ""
@@ -37,42 +38,77 @@ def clean_text(text):
     return text
 
 def identify_topics(text):
-    nlp = load_nlp()
-    
-    # Pre-process: split common multi-topic delimiters
-    # If a line has many commas and is long, it likely contains multiple topics
-    lines = text.split('\n')
-    if len(lines) < 5:
-        doc = nlp(text)
-        lines = [sent.text.strip() for sent in doc.sents]
-    
-    expanded_lines = []
-    for line in lines:
-        if len(line) > 50 and (',' in line or ';' in line):
-            # Split by common delimiters but keep the structure
-            parts = re.split(r'[,;]', line)
-            expanded_lines.extend([p.strip() for p in parts if len(p.strip()) > 3])
-        else:
-            expanded_lines.append(line)
-
-    topics = []
-    for line in expanded_lines:
-        line = line.strip()
-        if not line: continue
+    """
+    Uses Gemini API to extract topics from syllabus text.
+    This replaces the heavyweight spaCy model.
+    """
+    try:
+        model = get_gemini()
         
+        prompt = f"""
+You are an educational AI assistant. Extract all distinct topics from this syllabus text.
+
+Rules:
+1. Return ONLY a JSON array of topic strings
+2. Each topic should be a clear, concise learning objective
+3. Preserve UNIT/MODULE/CHAPTER markers if present
+4. Remove duplicates
+5. Keep topics under 120 characters
+6. Extract 5-20 topics depending on content length
+
+Syllabus:
+{text[:3000]}
+
+Return format (JSON only, no markdown):
+["Topic 1", "Topic 2", "Topic 3"]
+"""
+        
+        response = model.generate_content(prompt)
+        response_text = response.text.strip()
+        
+        # Clean markdown artifacts if present
+        response_text = response_text.replace('```json', '').replace('```', '').strip()
+        
+        topics = json.loads(response_text)
+        
+        # Validate and clean
+        if isinstance(topics, list) and len(topics) > 0:
+            return [str(t).strip() for t in topics if t and len(str(t).strip()) > 0]
+        else:
+            # Fallback to simple extraction
+            return fallback_topic_extraction(text)
+            
+    except Exception as e:
+        print(f"⚠️ Gemini extraction failed: {str(e)}, using fallback")
+        return fallback_topic_extraction(text)
+
+def fallback_topic_extraction(text):
+    """
+    Simple regex-based topic extraction as fallback.
+    """
+    lines = text.split('\n')
+    topics = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line or len(line) < 10:
+            continue
+            
         # Check for Unit/Module markers
         if re.match(r'^(UNIT|MODULE|CHAPTER)\s+[IVX\d\w]+', line, re.IGNORECASE):
             topics.append(line)
-        elif len(line) < 120: # Slightly larger threshold for detailed topics
-            # Further filter: must have some significance (nouns)
-            sub_doc = nlp(line)
-            if any(token.pos_ in ["NOUN", "PROPN"] for token in sub_doc):
-                # Clean up: remove trailing dots or numbers
-                clean_line = re.sub(r'^[\d\.\-\s]+', '', line)
-                if clean_line:
-                    topics.append(clean_line)
-
-    # De-duplicate while preserving order
+        # Extract numbered topics
+        elif re.match(r'^\d+[\.\)]\s+', line):
+            clean_line = re.sub(r'^\d+[\.\)]\s+', '', line)
+            if len(clean_line) < 120 and len(clean_line) > 10:
+                topics.append(clean_line)
+        # Extract bullet points
+        elif re.match(r'^[\-\*•]\s+', line):
+            clean_line = re.sub(r'^[\-\*•]\s+', '', line)
+            if len(clean_line) < 120 and len(clean_line) > 10:
+                topics.append(clean_line)
+    
+    # De-duplicate
     seen = set()
     unique_topics = []
     for t in topics:
@@ -81,4 +117,4 @@ def identify_topics(text):
             unique_topics.append(t)
             seen.add(key)
     
-    return unique_topics
+    return unique_topics[:20]  # Limit to 20 topics

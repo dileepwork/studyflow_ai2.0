@@ -1,13 +1,26 @@
-import networkx as nx
 import re
+import json
+import os
+
+def get_gemini():
+    """Lazy load Gemini"""
+    try:
+        import google.generativeai as genai
+        api_key = os.environ.get('GEMINI_API_KEY')
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY not set")
+        genai.configure(api_key=api_key)
+        return genai.GenerativeModel('gemini-1.5-flash')
+    except Exception as e:
+        print(f"❌ Gemini load failed: {str(e)}")
+        raise
 
 def analyze_dependencies(topics):
     """
-    Detects prerequisite relationships between topics using lightweight Jaccard Similarity.
+    Lightweight dependency analysis using string similarity.
+    Replaces networkx with simple dict-based graph.
     """
-    G = nx.DiGraph()
-    for topic in topics:
-        G.add_node(topic)
+    graph = {topic: [] for topic in topics}
     
     # Pre-tokenize topics for similarity
     def get_tokens(text):
@@ -18,48 +31,63 @@ def analyze_dependencies(topics):
     if len(topics) > 1:
         for i in range(len(topics)):
             for j in range(i + 1, len(topics)):
-                # Jaccard Similarity: Intersection / Union
+                # Jaccard Similarity
                 set_i = topic_tokens[i]
                 set_j = topic_tokens[j]
                 
-                if not set_i or not set_j: continue
+                if not set_i or not set_j:
+                    continue
                 
                 intersection = len(set_i.intersection(set_j))
                 union = len(set_i.union(set_j))
-                similarity = intersection / union
+                similarity = intersection / union if union > 0 else 0
                 
                 # If topics are similar, assume earlier one is prerequisite
                 if similarity > 0.2:
-                    G.add_edge(topics[i], topics[j])
+                    graph[topics[i]].append(topics[j])
 
     # Unit-based dependency
     current_unit = None
     for topic in topics:
         if re.match(r'^(UNIT|MODULE|CHAPTER)\s+[IVX\d]+', topic, re.IGNORECASE):
             current_unit = topic
-        elif current_unit:
-            G.add_edge(current_unit, topic)
+        elif current_unit and current_unit in graph:
+            graph[current_unit].append(topic)
 
-    # Ensure it's a DAG (remove cycles if any)
-    # Simple cycle removal: if (a,b) and (b,a), keep (a,b) if index of a < index of b
-    # But usually syllabus is already somewhat ordered.
-    if not nx.is_directed_acyclic_graph(G):
-        cycles = list(nx.simple_cycles(G))
-        for cycle in cycles:
-            # For each cycle, remove the back-edge (where target index < source index)
-            # This is a bit naive but works for syllabus flow
-            pass
-            
-    return G
+    return graph
 
-def get_study_order(G):
-    try:
-        # If there are cycles, we can't do topological sort
-        # We'll use a modified approach or just return the syllabus order if it fails
-        return list(nx.topological_sort(G))
-    except nx.NetworkXUnfeasible:
-        # If it contains cycles, fallback to original order
-        return list(G.nodes())
+def get_study_order(graph):
+    """
+    Simple topological sort without networkx.
+    """
+    # Calculate in-degrees
+    in_degree = {node: 0 for node in graph}
+    for node in graph:
+        for neighbor in graph[node]:
+            if neighbor in in_degree:
+                in_degree[neighbor] += 1
+    
+    # Queue of nodes with no dependencies
+    queue = [node for node in graph if in_degree[node] == 0]
+    result = []
+    
+    while queue:
+        node = queue.pop(0)
+        result.append(node)
+        
+        for neighbor in graph.get(node, []):
+            if neighbor in in_degree:
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0:
+                    queue.append(neighbor)
+    
+    # If not all nodes processed (cycle detected), add remaining
+    if len(result) < len(graph):
+        for node in graph:
+            if node not in result:
+                result.append(node)
+    
+    return result
 
 # Teacher's Insights & Resources Mapping
 MENTOR_TIPS = {
@@ -98,7 +126,7 @@ def classify_topics_fully(ordered_topics):
     
     topic_details = {}
     for topic in ordered_topics:
-        score = 2 # Default Medium
+        score = 2  # Default Medium
         t_lower = topic.lower()
         
         if any(kw in t_lower for kw in easy_keywords):
@@ -121,16 +149,17 @@ def generate_schedule(ordered_topics, topic_details, total_weeks, hours_per_week
     """
     # Adjust weights based on student level
     if student_level == "Beginner":
-        weights = {1: 2.5, 2: 3, 3: 4} # Extra time for foundations
+        weights = {1: 2.5, 2: 3, 3: 4}  # Extra time for foundations
     elif student_level == "Advanced":
-        weights = {1: 0.5, 2: 1.5, 3: 3} # Skip basics, focus on hard
-    else: # Intermediate
+        weights = {1: 0.5, 2: 1.5, 3: 3}  # Skip basics, focus on hard
+    else:  # Intermediate
         weights = {1: 1, 2: 2, 3: 3}
     
     topic_weights = [(t, weights[topic_details[t]["difficulty"]]) for t in ordered_topics]
     total_weight = sum(w for _, w in topic_weights)
     
-    if total_weight == 0: total_weight = 1
+    if total_weight == 0:
+        total_weight = 1
     
     weight_per_week = total_weight / total_weeks
     
@@ -156,8 +185,6 @@ def generate_schedule(ordered_topics, topic_details, total_weeks, hours_per_week
     # Add remaining topics to last week
     if current_week_topics:
         if week_num > total_weeks:
-            # Distribute leftover to previous weeks if too many, 
-            # or just add to last week
             schedule[-1]["topics"].extend(current_week_topics)
         else:
             schedule.append({
@@ -167,41 +194,48 @@ def generate_schedule(ordered_topics, topic_details, total_weeks, hours_per_week
             
     return schedule
 
-# Topic Knowledge Base for Chat
-TOPIC_KNOWLEDGE = {
-    "introduction": "Artificial Intelligence is about creating systems that can perform tasks that normally require human intelligence, like sensing, reasoning, and learning.",
-    "search": "Search algorithms like A* or BFS are used to find the best path from a start to a goal. BFS is blind, while A* uses heuristics to 'see' the most promising direction.",
-    "neural": "Neural Networks are inspired by the brain. They consist of layers of nodes that learn to recognize patterns by adjusting connection weights during training.",
-    "bayesian": "Bayesian networks use probability to represent uncertain knowledge. It's like a map of how one event makes another event more or less likely.",
-    "logic": "Propositional and First-Order Logic are formal languages for representing facts and rules so that the computer can deduce new information from them.",
-    "machine learning": "Machine Learning is a subset of AI where computers learn from data rather than being explicitly programmed for every scenario.",
-    "supervised": "In supervised learning, the model is trained on labeled data, meaning the computer is given the 'answers' and learns to map inputs to those answers.",
-    "heuristic": "A heuristic is a 'rule of thumb' or a shortcut. In A* search, it's an estimate of the distance to the goal, helping the algorithm prioritize the best directions.",
-    "backpropagation": "Backpropagation is the 'learning' engine of neural networks. It calculates errors and sends them backward through the network to adjust the weights and improve accuracy.",
-    "decision tree": "A Decision Tree is like a flow chart for making decisions based on data. It splits information into branches until it reaches a conclusion.",
-    "hard": "This is a complex topic that involves deep technical math or abstract concepts. I suggest looking at the YouTube tutorial in your resource list for a visual explanation.",
-}
-
 def chat_with_mentor(topic, user_message):
+    """
+    AI-powered mentor chat using Gemini API.
+    """
+    try:
+        model = get_gemini()
+        
+        prompt = f"""
+You are a friendly AI study mentor helping a student understand "{topic}".
+
+Student's question: {user_message}
+
+Provide a helpful, concise response (2-3 sentences max) that:
+1. Answers their question directly
+2. Relates to the topic "{topic}"
+3. Encourages them with practical advice
+4. Uses simple, clear language
+
+Response:
+"""
+        
+        response = model.generate_content(prompt)
+        return response.text.strip()
+        
+    except Exception as e:
+        print(f"⚠️ Gemini chat failed: {str(e)}, using fallback")
+        return fallback_chat_response(topic, user_message)
+
+def fallback_chat_response(topic, user_message):
+    """Fallback chat responses without API"""
     message_lower = user_message.lower()
-    topic_lower = topic.lower()
     
-    # Intent detection
     if any(word in message_lower for word in ["hello", "hi", "hey"]):
         return f"Hi there! I'm ready to help you master {topic}. What's on your mind?"
     
     if any(word in message_lower for word in ["what is", "define", "explain", "understand"]):
-        # Try to find specific knowledge
-        for key, info in TOPIC_KNOWLEDGE.items():
-            if key in topic_lower or key in message_lower:
-                return f"Sure! {info} In the context of {topic}, it's a foundational concept you'll need for your exams."
-        return f"To understand {topic}, think of it as a way to solve problems using intelligence. It's often broken down into smaller, simpler steps."
+        return f"To understand {topic}, think of it as a way to solve problems systematically. It's often broken down into smaller, simpler steps. Check the resource links for detailed explanations!"
         
     if "example" in message_lower:
-        return f"A great example of {topic} is how a GPS finds the fastest route or how Netflix recommends movies to you based on what you've watched before."
+        return f"A great example of {topic} is how modern systems solve real-world problems efficiently. The resources I've provided have excellent examples with visuals."
 
     if any(word in message_lower for word in ["hard", "difficult", "confused", "stuck"]):
-        return f"Don't worry, {topic} is considered one of the tougher parts. I recommend focusing on the basic diagrams first. Have you checked the GeeksforGeeks link I provided?"
+        return f"Don't worry, {topic} can be challenging. I recommend starting with the YouTube tutorial I provided. Focus on understanding the basic concept first, then dive into details."
 
-    # Fallback
-    return f"That's a sharp observation about {topic}. To master this, I suggest you try a practice problem or explain it to a friend. The resource links in your dashboard have some great deep-dives for this!"
+    return f"That's a great question about {topic}! Check the GeeksforGeeks link in your resources for detailed examples and explanations. Practice problems really help solidify understanding."
