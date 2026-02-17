@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "vercel-build": "vite build",
+    "build": "vite build --outDir ../dist --emptyOutDir",
+    "vercel-build": "vite build --outDir ../dist --emptyOutDir",
     "lint": "eslint .",
     "preview": "vite preview"
   },
