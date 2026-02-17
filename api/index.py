@@ -2,177 +2,229 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 import sys
+import re
+import json
+import pypdf
 from werkzeug.utils import secure_filename
-
-# Ensure the 'api' directory is in the path for serverless imports
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.append(current_dir)
 
 app = Flask(__name__)
 CORS(app)
 
-# Lazy imports - only import when needed to avoid cold start issues
-def get_dependencies():
+# ==========================================
+# 🤖 GEMINI CONFIGURATION
+# ==========================================
+def get_gemini():
     try:
-        # Try importing as package first (works on Vercel)
-        try:
-            from api import utils, processor
-            print("✅ Imported via 'from api import ...'")
-        except ImportError:
-            # Fallback to direct import (works locally)
-            import utils
-            import processor
-            print("✅ Imported via 'import ...' fallback")
-            
-        return {
-            'extract_text_from_pdf': utils.extract_text_from_pdf,
-            'clean_text': utils.clean_text,
-            'identify_topics': utils.identify_topics,
-            'analyze_dependencies': processor.analyze_dependencies,
-            'get_study_order': processor.get_study_order,
-            'classify_topics_fully': processor.classify_topics_fully,
-            'generate_schedule': processor.generate_schedule,
-            'chat_with_mentor': processor.chat_with_mentor,
-        }
+        import google.generativeai as genai
+        api_key = os.environ.get('GEMINI_API_KEY')
+        if not api_key:
+            return None
+        genai.configure(api_key=api_key)
+        return genai.GenerativeModel('gemini-1.5-flash')
     except Exception as e:
-        print(f"❌ Failed to import dependencies: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise
+        print(f"❌ Gemini load failed: {str(e)}")
+        return None
+
+# ==========================================
+# 📄 UTILS (Self-contained)
+# ==========================================
+
+def extract_text_from_pdf(pdf_path):
+    text = ""
+    try:
+        with open(pdf_path, 'rb') as file:
+            reader = pypdf.PdfReader(file)
+            for page in reader.pages:
+                text += (page.extract_text() or "") + "\n"
+    except Exception as e:
+        print(f"Error extracting PDF: {str(e)}")
+    return text
+
+def clean_text(text):
+    text = re.sub(r'[^\w\s\.,;:\-\(\)]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def identify_topics(text):
+    """Uses Gemini API with fallback to regex"""
+    model = get_gemini()
+    if model:
+        try:
+            prompt = f"Extract distinct topics from this syllabus text as a JSON array of strings. Return ONLY JSON. Syllabus:\n{text[:3000]}"
+            response = model.generate_content(prompt)
+            topics = json.loads(response.text.replace('```json', '').replace('```', '').strip())
+            if isinstance(topics, list) and len(topics) > 0:
+                return topics
+        except Exception as e:
+            print(f"Gemini topic extraction failed: {str(e)}")
+            
+    # Fallback
+    lines = text.split('\n')
+    topics = []
+    for line in lines:
+        line = line.strip()
+        if not line or len(line) < 10: continue
+        if re.match(r'^(UNIT|MODULE|CHAPTER)\s', line, re.IGNORECASE) or len(line) < 100:
+            topics.append(re.sub(r'^\d+[\.\)]\s*', '', line))
+    return list(dict.fromkeys(topics))[:20]
+
+# ==========================================
+# ⚙️ PROCESSOR (Self-contained)
+# ==========================================
+
+def analyze_dependencies(topics):
+    graph = {topic: [] for topic in topics}
+    tokens = [set(re.findall(r'\w+', t.lower())) for t in topics]
+    
+    for i in range(len(topics)):
+        for j in range(i + 1, len(topics)):
+            if not tokens[i] or not tokens[j]: continue
+            similarity = len(tokens[i].intersection(tokens[j])) / len(tokens[i].union(tokens[j]))
+            if similarity > 0.2:
+                graph[topics[i]].append(topics[j])
+                
+    current_unit = None
+    for topic in topics:
+        if re.match(r'^(UNIT|MODULE|CHAPTER)', topic, re.IGNORECASE):
+            current_unit = topic
+        elif current_unit:
+            graph[current_unit].append(topic)
+    return graph
+
+def get_study_order(graph):
+    in_degree = {node: 0 for node in graph}
+    for node in graph:
+        for neighbor in graph[node]:
+            if neighbor in in_degree: in_degree[neighbor] += 1
+    
+    queue = [node for node in graph if in_degree[node] == 0]
+    result = []
+    while queue:
+        node = queue.pop(0)
+        result.append(node)
+        for neighbor in graph.get(node, []):
+            if neighbor in in_degree:
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0: queue.append(neighbor)
+    
+    if len(result) < len(graph):
+        for node in graph:
+            if node not in result: result.append(node)
+    return result
+
+MENTOR_TIPS = {
+    "introduction": "Understand the basics first.",
+    "neural": "Visualize the layers.",
+    "algorithm": "Practice small examples.",
+    "math": "Focus on the logic."
+}
+
+def get_mentor_advice(topic):
+    t_lower = topic.lower()
+    for key, tip in MENTOR_TIPS.items():
+        if key in t_lower: return tip
+    return "Focus on real-world applications."
+
+def classify_topics_fully(ordered_topics):
+    topic_details = {}
+    for topic in ordered_topics:
+        topic_details[topic] = {
+            "difficulty": 2, 
+            "advice": get_mentor_advice(topic),
+            "resources": [
+                {"name": "YouTube", "url": f"https://www.youtube.com/results?search_query={topic.replace(' ','+')}"},
+                {"name": "Tutorial", "url": f"https://www.google.com/search?q={topic.replace(' ','+')}+tutorial"}
+            ]
+        }
+    return topic_details
+
+def generate_schedule(ordered_topics, topic_details, weeks, hours, level):
+    weights = {1: 1, 2: 2, 3: 3}
+    if level == "Beginner": weights = {1: 2, 2: 3, 3: 4}
+    
+    topic_weights = [(t, weights.get(topic_details[t]["difficulty"], 2)) for t in ordered_topics]
+    total_weight = sum(w for _, w in topic_weights) or 1
+    weight_per_week = total_weight / weeks
+    
+    schedule = []
+    curr_topics, curr_weight, w_num = [], 0, 1
+    for topic, weight in topic_weights:
+        curr_topics.append(topic)
+        curr_weight += weight
+        if curr_weight >= weight_per_week and w_num < weeks:
+            schedule.append({"week": w_num, "topics": curr_topics})
+            curr_topics, curr_weight, w_num = [], 0, w_num + 1
+    if curr_topics: schedule.append({"week": w_num, "topics": curr_topics})
+    return schedule
+
+def chat_with_mentor(topic, message):
+    model = get_gemini()
+    if model:
+        try:
+            prompt = f"As a mentor for {topic}, answer briefly: {message}"
+            return model.generate_content(prompt).text.strip()
+        except: pass
+    return f"Focus on understanding the core concepts of {topic} through practice."
+
+# ==========================================
+# 🌐 ROUTES
+# ==========================================
 
 @app.route('/api/health', methods=['GET'])
 def health():
+    return jsonify({"status": "healthy", "message": "API is running!", "timestamp": "2026-02-17"})
+
+@app.route('/api/debug', methods=['GET'])
+def debug():
     return jsonify({
-        "status": "healthy",
-        "message": "API is running!",
-        "timestamp": "2026-02-17"
+        "cwd": os.getcwd(),
+        "sys_path": sys.path,
+        "files_in_api": os.listdir('api') if os.path.exists('api') else "missing"
     })
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    try:
-        deps = get_dependencies()
-        data = request.json
-        topic = data.get('topic')
-        message = data.get('message')
-        response = deps['chat_with_mentor'](topic, message)
-        return jsonify({"response": response})
-    except Exception as e:
-        import traceback
-        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+    data = request.json or {}
+    return jsonify({"response": chat_with_mentor(data.get('topic', 'General'), data.get('message', ''))})
 
 UPLOAD_FOLDER = '/tmp'
-# Ensure the upload folder exists
-try:
-    if not os.path.exists(UPLOAD_FOLDER):
-        os.makedirs(UPLOAD_FOLDER)
-        print(f"✅ Upload folder created: {UPLOAD_FOLDER}")
-except Exception as e:
-    print(f"⚠️  Upload folder issue (may already exist): {str(e)}")
-
+if not os.path.exists(UPLOAD_FOLDER): os.makedirs(UPLOAD_FOLDER)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
-
-@app.route('/api/debug', methods=['GET'])
-def debug():
-    import os
-    import sys
-    return jsonify({
-        "cwd": os.getcwd(),
-        "sys_path": sys.path,
-        "files_in_cwd": os.listdir(os.getcwd()),
-        "files_in_api": os.listdir(os.path.join(os.getcwd(), 'api')) if os.path.exists(os.path.join(os.getcwd(), 'api')) else "api folder missing",
-        "file_location": __file__,
-        "dirname_file": os.path.dirname(__file__),
-        "files_in_dirname": os.listdir(os.path.dirname(__file__))
-    })
 
 @app.route('/api/analyze', methods=['POST'])
 def analyze_syllabus():
     try:
-        # Import dependencies here to avoid cold start issues
-        deps = get_dependencies()
-        
-        if 'file' not in request.files:
-            return jsonify({"error": "No file uploaded"}), 400
-        
+        if 'file' not in request.files: return jsonify({"error": "No file"}), 400
         file = request.files['file']
-        config = {
-            "weeks": int(request.form.get('weeks', 4)),
-            "hours": int(request.form.get('hours', 10)),
-            "level": request.form.get('level', 'Beginner')
-        }
-        
-        if file.filename == '':
-            return jsonify({"error": "No file selected"}), 400
+        if not file.filename: return jsonify({"error": "No filename"}), 400
         
         filename = secure_filename(file.filename)
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
         
-        # 1. Extraction
-        if filename.endswith('.pdf'):
-            raw_text = deps['extract_text_from_pdf'](filepath)
-        else:
-            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                raw_text = f.read()
-                
-        # 2. Cleaning
-        cleaned_text = deps['clean_text'](raw_text)
+        raw_text = extract_text_from_pdf(filepath) if filename.endswith('.pdf') else open(filepath, 'r', errors='ignore').read()
+        cleaned_text = clean_text(raw_text)
+        topics = identify_topics(cleaned_text)
+        G = analyze_dependencies(topics)
+        ordered_topics = get_study_order(G)
+        topic_details = classify_topics_fully(ordered_topics)
+        schedule = generate_schedule(ordered_topics, topic_details, 
+                                     int(request.form.get('weeks', 4)), 
+                                     int(request.form.get('hours', 10)), 
+                                     request.form.get('level', 'Beginner'))
         
-        # 3. Topic Identification
-        topics = deps['identify_topics'](cleaned_text)
-        
-        # 4. Dependency Analysis
-        G = deps['analyze_dependencies'](topics)
-        
-        # 5. Sorting
-        ordered_topics = deps['get_study_order'](G)
-        
-        # 6. Full Topic Analysis (Difficulty, Advice, Resources)
-        topic_details = deps['classify_topics_fully'](ordered_topics)
-        
-        # 7. Adaptive Schedule Generation
-        schedule = deps['generate_schedule'](ordered_topics, topic_details, config['weeks'], config['hours'], config['level'])
-        
-        # Prepare graph data for visualization
-        # G is now a dict {topic: [neighbors]}
-        graph_nodes = []
-        graph_links = []
-        for node in G:
-            graph_nodes.append({
-                "id": node, 
-                "group": topic_details.get(node, {}).get("difficulty", 2)
-            })
-            for neighbor in G.get(node, []):
-                graph_links.append({"source": node, "target": neighbor})
-        
-        graph_data = {
-            "nodes": graph_nodes,
-            "links": graph_links
-        }
+        nodes = [{"id": n, "group": topic_details[n]["difficulty"]} for n in G]
+        links = [{"source": u, "target": v} for u in G for v in G[u]]
         
         return jsonify({
             "topics": ordered_topics,
             "topic_details": topic_details,
             "schedule": schedule,
-            "graph": graph_data,
-            "mentor_summary": f"Based on your {config['level']} level, I've created a path that focuses more on { 'foundations' if config['level'] == 'Beginner' else 'advanced optimization' if config['level'] == 'Advanced' else 'balanced learning' }."
+            "graph": {"nodes": nodes, "links": links},
+            "mentor_summary": "Path generated successfully!"
         })
-    
     except Exception as e:
-        import traceback
-        error_msg = str(e)
-        trace = traceback.format_exc()
-        print("❌ ERROR in analyze_syllabus:")
-        print(error_msg)
-        print(trace)
-        return jsonify({
-            "error": error_msg, 
-            "traceback": trace
-        }), 500
-
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
