@@ -15,11 +15,15 @@ CORS(app)
 # Lazy imports - only import when needed to avoid cold start issues
 def get_dependencies():
     try:
+        # Try importing as package first (works on Vercel)
         try:
+            from api import utils, processor
+            print("✅ Imported via 'from api import ...'")
+        except ImportError:
+            # Fallback to direct import (works locally)
             import utils
             import processor
-        except ImportError:
-            from api import utils, processor
+            print("✅ Imported via 'import ...' fallback")
             
         return {
             'extract_text_from_pdf': utils.extract_text_from_pdf,
@@ -33,6 +37,8 @@ def get_dependencies():
         }
     except Exception as e:
         print(f"❌ Failed to import dependencies: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise
 
 @app.route('/api/health', methods=['GET'])
