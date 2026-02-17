@@ -1,11 +1,14 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from dotenv import load_dotenv
 import os
 import sys
 import re
 import json
 import pypdf
 from werkzeug.utils import secure_filename
+
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
@@ -41,9 +44,13 @@ def extract_text_from_pdf(pdf_path):
     return text
 
 def clean_text(text):
+    # Keep alphanumeric and basic punctuation
     text = re.sub(r'[^\w\s\.,;:\-\(\)]', ' ', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    # Collapse multiple spaces/tabs to single space (but NOT newlines)
+    text = re.sub(r'[ \t]+', ' ', text)
+    # Collapse multiple newlines to single newline
+    text = re.sub(r'\n+', '\n', text)
+    return text.strip()
 
 def identify_topics(text):
     """Uses Gemini API with fallback to regex"""
@@ -59,14 +66,28 @@ def identify_topics(text):
             print(f"Gemini topic extraction failed: {str(e)}")
             
     # Fallback
+    print("⚠️ Using Fallback Regex for Topic Extraction")
     lines = text.split('\n')
     topics = []
+    seen = set()
     for line in lines:
         line = line.strip()
-        if not line or len(line) < 10: continue
+        # Allow shorter lines (e.g. "BFS", "DFS", "Math") - heavily relaxed constraint
+        if not line or len(line) < 3: 
+            continue
+            
+        # Skip likely non-topics (dates, page numbers, etc)
+        if re.match(r'^\d+$', line) or re.match(r'^page\s+\d+', line, re.IGNORECASE):
+            continue
+            
         if re.match(r'^(UNIT|MODULE|CHAPTER)\s', line, re.IGNORECASE) or len(line) < 100:
-            topics.append(re.sub(r'^\d+[\.\)]\s*', '', line))
-    return list(dict.fromkeys(topics))[:20]
+            cleaned = re.sub(r'^[\d\.\)\-\*]+', '', line).strip()
+            if cleaned and cleaned not in seen and len(cleaned) > 2:
+                topics.append(cleaned)
+                seen.add(cleaned)
+                
+    print(f"Fallback extracted {len(topics)} topics: {topics[:5]}...")
+    return topics[:20]
 
 # ==========================================
 # ⚙️ PROCESSOR (Self-contained)

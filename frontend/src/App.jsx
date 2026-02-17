@@ -19,14 +19,15 @@ const SOUNDS = {
   analyze: ''  // 'assets/analyze.mp3'
 };
 
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
+
 const ChatAssistant = ({ topic }) => {
   const [messages, setMessages] = useState([
     { role: 'assistant', content: `Hello! I'm your AI Study Assistant. Do you have any specific doubts about "${topic}"?` }
   ]);
   const [input, setInput] = useState('');
 
-  // Check for environment variable, otherwise default to relative path (proxy)
-  const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
   const handleSend = async () => {
     if (!input.trim()) return;
@@ -96,6 +97,13 @@ const App = () => {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (result) {
+      console.log("Analysis Result:", result);
+      console.log("Topics:", result.topics);
+    }
+  }, [result]);
 
   const toggleTheme = () => {
     setTheme(prev => prev === 'dark' ? 'light' : 'dark');
@@ -296,13 +304,13 @@ const App = () => {
               </motion.div>
 
               <div className="grid" style={{ gridTemplateColumns: '1fr 1.5fr' }}>
-                <motion.div className="glass card" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }}>
+                <motion.div className="glass card" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} style={{ minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem' }}>
                     <Layers color="var(--primary)" />
                     <h3>Complexity Breakdown</h3>
                   </div>
-                  <div style={{ height: '280px' }}>
-                    <ResponsiveContainer width="100%" height="100%">
+                  <div style={{ height: '280px', width: '100%' }}>
+                    <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                       <PieChart>
                         <Pie data={difficultyData} cx="50%" cy="50%" innerRadius={60} outerRadius={90} paddingAngle={8} dataKey="value">
                           {difficultyData.map((entry, index) => <Cell key={`cell-${index}`} fill={getDifficultyColor(index + 1)} stroke="none" />)}
@@ -326,6 +334,7 @@ const App = () => {
                   initial={{ opacity: 0, x: 20 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: 0.1 }}
+                  style={{ minWidth: 0 }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem' }}>
                     <BookOpen color="var(--primary)" />
