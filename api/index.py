@@ -9,9 +9,19 @@ CORS(app)
 # Lazy imports - only import when needed to avoid cold start issues
 def get_dependencies():
     try:
-        from utils import extract_text_from_pdf, clean_text, identify_topics
-        from processor import analyze_dependencies, get_study_order, classify_topics_fully, generate_schedule, chat_with_mentor
-        import networkx as nx
+        import sys
+        import os
+        # Add current directory to path for serverless environment
+        sys.path.append(os.path.dirname(__file__))
+        
+        # Use relative imports or try both
+        try:
+            from utils import extract_text_from_pdf, clean_text, identify_topics
+            from processor import analyze_dependencies, get_study_order, classify_topics_fully, generate_schedule, chat_with_mentor
+        except ImportError:
+            from api.utils import extract_text_from_pdf, clean_text, identify_topics
+            from api.processor import analyze_dependencies, get_study_order, classify_topics_fully, generate_schedule, chat_with_mentor
+            
         return {
             'extract_text_from_pdf': extract_text_from_pdf,
             'clean_text': clean_text,
@@ -21,7 +31,6 @@ def get_dependencies():
             'classify_topics_fully': classify_topics_fully,
             'generate_schedule': generate_schedule,
             'chat_with_mentor': chat_with_mentor,
-            'nx': nx
         }
     except Exception as e:
         print(f"❌ Failed to import dependencies: {str(e)}")
@@ -109,9 +118,20 @@ def analyze_syllabus():
         schedule = deps['generate_schedule'](ordered_topics, topic_details, config['weeks'], config['hours'], config['level'])
         
         # Prepare graph data for visualization
+        # G is now a dict {topic: [neighbors]}
+        graph_nodes = []
+        graph_links = []
+        for node in G:
+            graph_nodes.append({
+                "id": node, 
+                "group": topic_details.get(node, {}).get("difficulty", 2)
+            })
+            for neighbor in G.get(node, []):
+                graph_links.append({"source": node, "target": neighbor})
+        
         graph_data = {
-            "nodes": [{"id": node, "group": topic_details.get(node, {}).get("difficulty", 2)} for node in G.nodes()],
-            "links": [{"source": u, "target": v} for u, v in G.edges()]
+            "nodes": graph_nodes,
+            "links": graph_links
         }
         
         return jsonify({
