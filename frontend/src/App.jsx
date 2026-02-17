@@ -14,9 +14,9 @@ import {
 } from 'recharts';
 
 const SOUNDS = {
-  success: 'https://cdn.pixabay.com/audio/2022/03/15/audio_7314757398.mp3', // Refreshing chime
-  click: 'https://cdn.pixabay.com/audio/2022/03/10/audio_c8c8a14c44.mp3',  // Soft pop
-  analyze: 'https://cdn.pixabay.com/audio/2021/08/09/audio_8245842817.mp3' // Ambient swell
+  success: '', // 'assets/success.mp3' - Replace with local file or reliable URL
+  click: '',   // 'assets/click.mp3'
+  analyze: ''  // 'assets/analyze.mp3'
 };
 
 const ChatAssistant = ({ topic }) => {
@@ -100,9 +100,10 @@ const App = () => {
   };
 
   const playSound = (type) => {
+    if (!SOUNDS[type]) return;
     const audio = new Audio(SOUNDS[type]);
     audio.volume = 0.2;
-    audio.play().catch(e => console.log("Sound blocked by browser"));
+    audio.play().catch(e => console.log("Sound blocked by browser or invalid URL"));
   };
 
   const onDrop = (acceptedFiles) => {
