@@ -11,5 +11,28 @@ export default defineConfig({
         changeOrigin: true,
       }
     }
+  },
+  build: {
+    // Code-splitting optimization
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Split React and React-DOM into separate chunk
+          'react-vendor': ['react', 'react-dom'],
+          // Split charts library (usually large)
+          'charts': ['recharts'],
+          // Split animation library
+          'motion': ['framer-motion'],
+          // Split other UI libraries
+          'ui-libs': ['lucide-react', 'react-dropzone', 'clsx', 'tailwind-merge'],
+          // Split axios separately
+          'http': ['axios']
+        }
+      }
+    },
+    // Enable CSS code splitting
+    cssCodeSplit: true,
+    // Optimize chunk size
+    chunkSizeWarningLimit: 600
   }
 })
