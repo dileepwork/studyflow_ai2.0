@@ -1,7 +1,13 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
+import sys
 from werkzeug.utils import secure_filename
+
+# Ensure the 'api' directory is in the path for serverless imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
 
 app = Flask(__name__)
 CORS(app)
@@ -9,28 +15,21 @@ CORS(app)
 # Lazy imports - only import when needed to avoid cold start issues
 def get_dependencies():
     try:
-        import sys
-        import os
-        # Add current directory to path for serverless environment
-        sys.path.append(os.path.dirname(__file__))
-        
-        # Use relative imports or try both
         try:
-            from utils import extract_text_from_pdf, clean_text, identify_topics
-            from processor import analyze_dependencies, get_study_order, classify_topics_fully, generate_schedule, chat_with_mentor
+            import utils
+            import processor
         except ImportError:
-            from api.utils import extract_text_from_pdf, clean_text, identify_topics
-            from api.processor import analyze_dependencies, get_study_order, classify_topics_fully, generate_schedule, chat_with_mentor
+            from api import utils, processor
             
         return {
-            'extract_text_from_pdf': extract_text_from_pdf,
-            'clean_text': clean_text,
-            'identify_topics': identify_topics,
-            'analyze_dependencies': analyze_dependencies,
-            'get_study_order': get_study_order,
-            'classify_topics_fully': classify_topics_fully,
-            'generate_schedule': generate_schedule,
-            'chat_with_mentor': chat_with_mentor,
+            'extract_text_from_pdf': utils.extract_text_from_pdf,
+            'clean_text': utils.clean_text,
+            'identify_topics': utils.identify_topics,
+            'analyze_dependencies': processor.analyze_dependencies,
+            'get_study_order': processor.get_study_order,
+            'classify_topics_fully': processor.classify_topics_fully,
+            'generate_schedule': processor.generate_schedule,
+            'chat_with_mentor': processor.chat_with_mentor,
         }
     except Exception as e:
         print(f"❌ Failed to import dependencies: {str(e)}")
