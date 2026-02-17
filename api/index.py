@@ -74,6 +74,20 @@ except Exception as e:
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 
+@app.route('/api/debug', methods=['GET'])
+def debug():
+    import os
+    import sys
+    return jsonify({
+        "cwd": os.getcwd(),
+        "sys_path": sys.path,
+        "files_in_cwd": os.listdir(os.getcwd()),
+        "files_in_api": os.listdir(os.path.join(os.getcwd(), 'api')) if os.path.exists(os.path.join(os.getcwd(), 'api')) else "api folder missing",
+        "file_location": __file__,
+        "dirname_file": os.path.dirname(__file__),
+        "files_in_dirname": os.listdir(os.path.dirname(__file__))
+    })
+
 @app.route('/api/analyze', methods=['POST'])
 def analyze_syllabus():
     try:
