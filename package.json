@@ -3,7 +3,7 @@
     "private": true,
     "scripts": {
         "install": "cd frontend && npm install",
-        "vercel-build": "cd frontend && npm install && npm run build && cd .. && rm -rf dist && mv frontend/dist dist",
-        "build": "cd frontend && npm install && npm run build && cd .. && rm -rf dist && mv frontend/dist dist"
+        "vercel-build": "cd frontend && npm install && npm run build && cd .. && mkdir -p dist && cp -rv frontend/dist/. dist/ && ls -la dist",
+        "build": "cd frontend && npm install && npm run build && cd .. && mkdir -p dist && cp -rv frontend/dist/. dist/ && ls -la dist"
     }
 }
