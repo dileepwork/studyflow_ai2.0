@@ -174,14 +174,6 @@ def chat_with_mentor(topic, message):
 def health():
     return jsonify({"status": "healthy", "message": "API is running!", "timestamp": "2026-02-17"})
 
-@app.route('/api/debug', methods=['GET'])
-def debug():
-    return jsonify({
-        "cwd": os.getcwd(),
-        "sys_path": sys.path,
-        "files_in_api": os.listdir('api') if os.path.exists('api') else "missing"
-    })
-
 @app.route('/api/chat', methods=['POST'])
 def chat():
     data = request.json or {}
