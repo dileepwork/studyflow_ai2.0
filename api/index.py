@@ -9,6 +9,10 @@ import networkx as nx
 app = Flask(__name__)
 CORS(app)
 
+@app.route('/')
+def home():
+    return jsonify({"status": "Backend is running", "message": "If you see this, the frontend is not being served correctly."})
+
 @app.route('/api/chat', methods=['POST'])
 def chat():
     data = request.json
