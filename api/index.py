@@ -62,20 +62,20 @@ def identify_topics(text):
     if model:
         try:
             prompt = f"""
-            Identify and extract the main learning topics or key concepts from the following text.
-            The text might be a formal syllabus, a chapter summary, or a list of learning objectives.
+            Identify and extract a comprehensive, granular list of learning topics or key concepts from the following text.
+            The text might be a formal syllabus, a chapter summary, or learning objectives.
             
             Strict Rules:
-            1. Extract distinct, high-level topics (max 15).
-            2. Each topic should be a SHORT, clear conceptual title (3-5 words max).
-            3. CRITICAL: Remove all labels like "UNIT I", "MODULE 1", "CHAPTER 1", "TOPIC 1.1", etc.
+            1. Extract a detailed list of specific concepts and sub-topics (max 25-30).
+            2. Aim for granularity: Extract specific techniques, algorithms, or theories (e.g., "Breadth-First Search" instead of just "Search Algorithms").
+            3. CRITICAL: Remove all unit labels like "UNIT I", "MODULE 1", "CHAPTER 1", etc.
             4. Remove metadata like "Page 1", "Session 2", dates, university names, or "Notes/Syllabus".
             5. Remove course codes like "CS3491", "AI3001", etc.
             6. NEVER include phrases like "You said", "Here are the topics", or any introductory text.
             7. Return ONLY a JSON array of strings.
             
             Text:
-            {text[:5000]}
+            {text[:6000]}
             """
             response = model.generate_content(prompt)
             raw_response = response.text.replace('```json', '').replace('```', '').strip()
@@ -87,16 +87,16 @@ def identify_topics(text):
                     cleaned = []
                     for t in topics:
                         t = str(t).strip()
-                        # Deep Cleaning
-                        t = re.sub(r'^(UNIT|MODULE|CHAPTER|TOPIC|SECTION|PART|LESSON)\s*[\d\.\-\:]*\s*', '', t, flags=re.IGNORECASE)
-                        t = re.sub(r'[A-Z]{2,}\d{3,}[A-Z]*', '', t) # Course codes like CS3491
-                        t = re.sub(r'(Syllabus|Notes|Course|University|Credit|Instructor|Hours)$', '', t, flags=re.IGNORECASE)
-                        t = re.sub(r'^[A-Z\d\.\-\s]+(?=[A-Z])', '', t) # Leading numbers/junk
+                        # Deep Cleaning while preserving concepts
+                        t = re.sub(r'^(UNIT|MODULE|CHAPTER|TOPIC|SECTION|PART|LESSON|I+|IV|V|VI|VII|VIII|IX|X)\s*[\d\.\-\:]*\s*', '', t, flags=re.IGNORECASE)
+                        t = re.sub(r'[A-Z]{2,}\d{3,}[A-Z]*', '', t) # CS3491
+                        t = re.sub(r'(Syllabus|Notes|Course|University|Credit|Instructor|Hours|Question Bank|Extra Questions|Important Questions)$', '', t, flags=re.IGNORECASE)
+                        t = re.sub(r'^[A-Z\d\.\-\s]+(?=[A-Z])', '', t) 
                         t = re.sub(r'\s+', ' ', t).strip()
                         
                         if t and len(t) > 3 and not any(phrase in t.lower() for phrase in ["you said", "here are", "identified", "topics"]):
                             cleaned.append(t.capitalize())
-                    return cleaned[:20]
+                    return cleaned[:30]
         except Exception as e:
             print(f"Gemini topic extraction failed: {str(e)}")
             
