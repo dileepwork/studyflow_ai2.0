@@ -289,10 +289,19 @@ def chat():
 def not_found(e):
     return jsonify({"error": "Path not found", "path": request.path}), 404
 
-# Determine the absolute path for uploads folder
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
-if not os.path.exists(UPLOAD_FOLDER): os.makedirs(UPLOAD_FOLDER)
+# Handle File Uploads (Vercel requires /tmp for writability)
+if os.environ.get('VERCEL'):
+    UPLOAD_FOLDER = '/tmp'
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
+
+if not os.path.exists(UPLOAD_FOLDER): 
+    try:
+        os.makedirs(UPLOAD_FOLDER)
+    except:
+        pass # Folders like /tmp might already exist or have restricted permissions
+
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 @app.route('/api/analyze', methods=['POST'])
