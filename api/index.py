@@ -61,57 +61,66 @@ def identify_topics(text):
     model = get_gemini()
     if model:
         try:
-            # First, try to identify the main subject to strip it later
-            subject_prompt = f"What is the main subject of this syllabus in 3 words or less? Text: {text[:500]}"
-            subject_name = model.generate_content(subject_prompt).text.strip().lower()
-            
+            # 1. Detect subject to remove it from topic titles
+            subject_name = ""
+            try:
+                sub_res = model.generate_content(f"Identify the main subject name from this text in 2 words max. Text: {text[:400]}")
+                subject_name = sub_res.text.strip().lower()
+            except: pass
+
             prompt = f"""
-            Extract a highly detailed study roadmap from the following educational text.
+            Extract a COMPREHENSIVE and DETAILED list of learning topics from the text provided.
             
-            Objective: Break down broad chapters/units into their specific, constituent technical concepts.
+            GOAL: Break down every Unit/Chapter/Section into at least 4-6 specific technical sub-topics. 
+            Aim for at least 25-30 distinct conceptual topics in total.
             
-            Strict Rules:
-            1. DO NOT return broad unit/chapter titles (e.g., "Unit 1", "Introduction"). Breakdown those units into 3-5 specific sub-concepts each.
-            2. REMOVE all repetitive text like "{subject_name}", "Notes", "Question Bank", "Syllabus", and "Important Questions".
-            3. Each topic must be a clear conceptual title (e.g., "Bellman-Ford Algorithm" instead of "Unit 3 Algorithm Notes").
-            4. Remove all Roman numerals (I, II, III, IV, V...), labels like "UNIT", "MODULE", and course codes.
-            5. Return 20-30 distinct, granular concepts in logical order.
-            
-            Example of BAD Topic: "Unit II Artificial Intelligence Notes"
-            Example of GOOD Topic: "Bayesian Inference"
+            Rules:
+            1. DO NOT return Unit/Chapter headers (e.g., skip "Unit 1", "Module 2").
+            2. Extract specific concepts (e.g., "A* Search Algorithm", "Backpropagation", "Gradient Descent").
+            3. STRIP the subject name "{subject_name}" and words like "Notes", "Syllabus", "Question Bank", "Important", "Part" from every topic.
+            4. Remove all Roman numerals (I, II, III, IV, V...), numbering (1.1, 2.3...), and labels like "UNIT" or "TOPIC".
+            5. Each topic should be 2-5 words.
+            6. Return ONLY a JSON array of strings.
             
             Text:
             {text[:8000]}
-            
-            Return ONLY a JSON array of strings.
             """
             response = model.generate_content(prompt)
-            raw_response = response.text.replace('```json', '').replace('```', '').strip()
-            start = raw_response.find('[')
-            end = raw_response.rfind(']') + 1
+            raw = response.text.replace('```json', '').replace('```', '').strip()
+            
+            # Extract JSON array
+            start = raw.find('[')
+            end = raw.rfind(']') + 1
             if start != -1 and end != 0:
-                topics = json.loads(raw_response[start:end])
+                topics = json.loads(raw[start:end])
                 if isinstance(topics, list) and len(topics) > 0:
                     cleaned = []
-                    # More aggressive cleaning
-                    noise_patterns = [
-                        r'^(UNIT|MODULE|CHAPTER|TOPIC|SECTION|PART|LESSON|I+|IV|V|VI|VII|VIII|IX|X)\s*[\d\.\-\:]*\s*',
-                        r'[A-Z]{2,}\d{3,}[A-Z]*', # CS3491
-                        re.escape(subject_name) if len(subject_name) > 3 else r'',
-                        r'(Syllabus|Notes|Course|University|Credit|Instructor|Hours|Question Bank|Extra Questions|Important Questions|Question Paper|Objective|Summary)$'
-                    ]
-                    
+                    # More robust noise removal
                     for t in topics:
                         t = str(t).strip()
-                        for pattern in noise_patterns:
-                            if pattern: t = re.sub(pattern, '', t, flags=re.IGNORECASE).strip()
+                        # Strip Roman Numerals and headers at start (case insensitive)
+                        # Handled more specifically to avoid stripping 'I' out of concepts
+                        t = re.sub(r'^(?i)(UNIT|MODULE|CHAPTER|TOPIC|SECTION|PART|LESSON|ROMAN|WEEK|SESSION)\s*[\d\.\-\:]*', '', t).strip()
+                        t = re.sub(r'^(?i)(IX|IV|V?I{0,3})\s*[\d\.\-\:]*', '', t).strip() # Roman numerals
                         
-                        # Remove leading non-alpha junk
-                        t = re.sub(r'^[^a-zA-Z0-9]+', '', t).strip()
+                        # Strip subject name and common noise words anywhere in the string
+                        if subject_name and len(subject_name) > 3:
+                            t = re.sub(re.escape(subject_name), '', t, flags=re.IGNORECASE).strip()
                         
-                        if t and len(t) > 3 and not any(phrase in t.lower() for phrase in ["you said", "here are", "identified", "topics", "content of"]):
+                        # Strip trailing junk
+                        t = re.sub(r'(?i)\s*(Syllabus|Notes|Course|University|Credit|Instructor|Hours|Question Bank|Extra Questions|Important Questions|Question Paper|Objective|Summary|Module|Unit|Chapter|Topic)\s*$', '', t).strip()
+                        
+                        # General cleanup
+                        t = re.sub(r'^[^a-zA-Z0-9]+', '', t).strip() # Leading junk
+                        t = re.sub(r'\s+', ' ', t).strip()
+                        
+                        # Final filter: remove AI talk and extremely short/generic junk
+                        lower_t = t.lower()
+                        if (t and len(t) > 3 and 
+                            not any(noise in lower_t for noise in ["you said", "here are", "identified", "topics", "content of", "syllabus for"])):
                             cleaned.append(t.capitalize())
-                    return list(dict.fromkeys(cleaned))[:30]
+                            
+                    return list(dict.fromkeys(cleaned))[:35]
         except Exception as e:
             print(f"Gemini topic extraction failed: {str(e)}")
             
