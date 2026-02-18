@@ -2,9 +2,8 @@
     "name": "studyflowai-root",
     "private": true,
     "scripts": {
-        "install": "cd frontend && npm install",
-        "vercel-build": "cd frontend && npm install && npm run build",
-        "build": "cd frontend && npm run build",
-        "dev": "cd frontend && npm run dev"
+        "build": "cd frontend && npm install && npm run build",
+        "dev-api": "cd api && python index.py",
+        "dev-web": "cd frontend && npm run dev"
     }
 }

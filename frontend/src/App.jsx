@@ -14,9 +14,9 @@ import {
 } from 'recharts';
 
 const SOUNDS = {
-  success: '', // 'assets/success.mp3' - Replace with local file or reliable URL
-  click: '',   // 'assets/click.mp3'
-  analyze: ''  // 'assets/analyze.mp3'
+  success: 'https://cdn.pixabay.com/audio/2021/08/04/audio_bbd1399ef8.mp3',
+  click: 'https://cdn.pixabay.com/audio/2022/03/15/audio_78390a31ee.mp3',
+  analyze: 'https://cdn.pixabay.com/audio/2022/03/10/audio_c3523a1005.mp3'
 };
 
 
@@ -81,18 +81,46 @@ const ChatAssistant = ({ topic }) => {
 };
 
 const App = () => {
-  const [view, setView] = useState('home'); // home, dashboard
+  // Persistence
+  const [view, setView] = useState(() => localStorage.getItem('studyflow_view') || 'home');
+  const [result, setResult] = useState(() => {
+    const saved = localStorage.getItem('studyflow_result');
+    return saved ? JSON.parse(saved) : null;
+  });
+  const [completedTopics, setCompletedTopics] = useState(() => {
+    const saved = localStorage.getItem('studyflow_completed');
+    return saved ? JSON.parse(saved) : [];
+  });
   const [user, setUser] = useState({ name: 'Student' });
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState(null);
   const [selectedTopic, setSelectedTopic] = useState(null);
-  const [theme, setTheme] = useState('dark');
-  const [config, setConfig] = useState({
-    weeks: 4,
-    hours: 10,
-    level: 'Beginner'
+  const [theme, setTheme] = useState(() => localStorage.getItem('studyflow_theme') || 'dark');
+  const [config, setConfig] = useState(() => {
+    const saved = localStorage.getItem('studyflow_config');
+    return saved ? JSON.parse(saved) : { weeks: 4, hours: 10, level: 'Beginner' };
   });
+
+  useEffect(() => {
+    localStorage.setItem('studyflow_view', view);
+    localStorage.setItem('studyflow_result', JSON.stringify(result));
+    localStorage.setItem('studyflow_completed', JSON.stringify(completedTopics));
+    localStorage.setItem('studyflow_theme', theme);
+    localStorage.setItem('studyflow_config', JSON.stringify(config));
+  }, [view, result, completedTopics, theme, config]);
+
+  useEffect(() => {
+    // Connection Check
+    const checkConnection = async () => {
+      try {
+        const resp = await axios.get(`${API_BASE_URL}/api/health`);
+        console.log("✅ Backend connected:", resp.data);
+      } catch (err) {
+        console.error("❌ Backend connection failed. Check if API is running at http://127.0.0.1:5000");
+      }
+    };
+    checkConnection();
+  }, []);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -160,7 +188,34 @@ const App = () => {
   const handleReset = () => {
     setResult(null);
     setFile(null);
+    setCompletedTopics([]);
     setView('home');
+    localStorage.clear();
+  };
+
+  const toggleTopic = (topic) => {
+    setCompletedTopics(prev =>
+      prev.includes(topic) ? prev.filter(t => t !== topic) : [...prev, topic]
+    );
+    playSound('click');
+  };
+
+  const downloadRoadmap = () => {
+    if (!result) return;
+    const content = `STUDYFLOW AI ROADMAP\n===================\n\n` +
+      `Duration: ${config.weeks} Weeks\n` +
+      `Level: ${config.level}\n\n` +
+      result.schedule.map(w => (
+        `WEEK ${w.week}\n` +
+        w.topics.map(t => `- [ ] ${t} (${result.topic_details[t].difficulty === 1 ? 'Focus' : 'Elite'})\n    Advice: ${result.topic_details[t].advice}`).join('\n')
+      )).join('\n\n');
+
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `StudyFlow_Roadmap_${new Date().toLocaleDateString()}.txt`;
+    a.click();
   };
 
   const getDifficultyColor = (score) => {
@@ -183,8 +238,8 @@ const App = () => {
             <BrainCircuit size={64} style={{ color: 'var(--primary)' }} />
             <h1 style={{ background: 'linear-gradient(to right, #6366f1, #ec4899)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', margin: 0 }}>StudyFlow AI</h1>
           </div>
-          <h1>Conquer Your Syllabus, Effortlessly.</h1>
-          <p>Stop drowning in messy PDFs. Our AI decomposes your entire curriculum into a strategic, adaptive roadmap designed exactly for your proficiency.</p>
+          <h1>Master Any Subject, Effortlessly.</h1>
+          <p>Stop drowning in messy notes or PDFs. Our AI decomposes any curriculum or topic into a strategic, adaptive roadmap designed exactly for your proficiency.</p>
           <div style={{ display: 'flex', gap: '1.5rem', justifyContent: 'center' }}>
             <button className="btn-primary" onClick={() => setView('dashboard')} style={{ fontSize: '1.2rem', padding: '1.2rem 3rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
               Get Started <ArrowRight size={24} />
@@ -197,8 +252,8 @@ const App = () => {
         <h2 className="section-title">How It Works</h2>
         <div className="grid">
           {[
-            { icon: <Upload size={32} />, title: 'Drop Your Files', desc: 'Upload your syllabus as PDF or Text. AI starts mapping your curriculum immediately.' },
-            { icon: <Zap size={32} />, title: 'AI Decomposition', desc: 'Our NLP engine breaks down complex topics and detects hidden prerequisites.' },
+            { icon: <Upload size={32} />, title: 'Drop Your Content', desc: 'Upload your syllabus, notes, or chapter text. AI starts mapping your curriculum immediately.' },
+            { icon: <Zap size={32} />, title: 'AI Decomposition', desc: 'Our NLP engine breaks down complex topics and detects logical learning paths.' },
             { icon: <Sparkles size={32} />, title: 'Adaptive Strategy', desc: "Pick your level—Topper or Beginner—and get a plan that fits your speed." },
             { icon: <ShieldCheck size={32} />, title: 'Goal Execution', desc: 'Follow your interactive roadmap with real-time AI Mentor coaching.' }
           ].map((step, i) => (
@@ -241,7 +296,7 @@ const App = () => {
             <motion.div className="glass card" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}>
               <div style={{ marginBottom: '2rem', textAlign: 'center' }}>
                 <h2 style={{ marginBottom: '0.5rem' }}>Ready to Flow, {user?.name}? 🚀</h2>
-                <p style={{ color: 'var(--text-muted)' }}>Upload your syllabus and let's craft an effective roadmap specialized for your level.</p>
+                <p style={{ color: 'var(--text-muted)' }}>Upload your syllabus or study material and let's craft an effective roadmap specialized for your level.</p>
               </div>
 
               <div {...getRootProps()} style={{
@@ -261,7 +316,7 @@ const App = () => {
                   <p style={{ fontWeight: 600, fontSize: '1.1rem', color: 'var(--primary)' }}>{file.name}</p>
                 ) : (
                   <div>
-                    <p style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>{isDragActive ? "Release to drop" : "Drop your syllabus here"}</p>
+                    <p style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>{isDragActive ? "Release to drop" : "Drop your material here"}</p>
                     <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Supports PDF and TXT files</p>
                   </div>
                 )}
@@ -293,7 +348,7 @@ const App = () => {
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '2.5rem' }}>
 
-              <motion.div className="glass card" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} style={{ borderLeft: '4px solid var(--primary)' }}>
+              <motion.div className="glass card" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} style={{ borderLeft: '4px solid var(--primary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center' }}>
                   <div style={{ background: 'var(--primary)', padding: '1rem', borderRadius: '1rem' }}><BrainCircuit size={32} color="white" /></div>
                   <div>
@@ -301,6 +356,9 @@ const App = () => {
                     <p style={{ color: 'var(--text-muted)' }}>{result.mentor_summary}</p>
                   </div>
                 </div>
+                <button onClick={downloadRoadmap} className="btn-primary" style={{ padding: '0.75rem 1.5rem', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Download size={18} /> Download
+                </button>
               </motion.div>
 
               <div className="grid" style={{ gridTemplateColumns: '1fr 1.5fr' }}>
@@ -363,12 +421,18 @@ const App = () => {
                           className="roadmap-card"
                           whileHover={{ scale: 1.02, x: 10 }}
                           onClick={() => { setSelectedTopic(topic); playSound('click'); }}
-                          style={{ cursor: 'pointer' }}
+                          style={{ cursor: 'pointer', opacity: completedTopics.includes(topic) ? 0.6 : 1 }}
                         >
-                          <div style={{ background: 'linear-gradient(135deg, var(--primary), var(--secondary))', width: '35px', height: '35px', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.9rem', fontWeight: 'bold', flexShrink: 0, color: 'white' }}>
-                            {i + 1}
+                          <div
+                            onClick={(e) => { e.stopPropagation(); toggleTopic(topic); }}
+                            style={{
+                              background: completedTopics.includes(topic) ? '#22c55e' : 'linear-gradient(135deg, var(--primary), var(--secondary))',
+                              width: '35px', height: '35px', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.9rem', fontWeight: 'bold', flexShrink: 0, color: 'white', transition: 'all 0.3s'
+                            }}
+                          >
+                            {completedTopics.includes(topic) ? <CheckCircle2 size={18} /> : i + 1}
                           </div>
-                          <span style={{ flex: 1, fontSize: '0.95rem', fontWeight: 600 }}>{topic}</span>
+                          <span style={{ flex: 1, fontSize: '0.95rem', fontWeight: 600, textDecoration: completedTopics.includes(topic) ? 'line-through' : 'none' }}>{topic}</span>
                           <span className={`badge badge-${result.topic_details[topic].difficulty === 1 ? 'easy' : result.topic_details[topic].difficulty === 2 ? 'medium' : 'hard'}`}>
                             {result.topic_details[topic].difficulty === 1 ? 'Focus' : result.topic_details[topic].difficulty === 2 ? 'Moderate' : 'Elite'}
                           </span>

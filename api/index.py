@@ -1,17 +1,21 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from dotenv import load_dotenv
 import os
 import sys
 import re
 import json
 import pypdf
 from werkzeug.utils import secure_filename
+from dotenv import load_dotenv
 
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
+
+@app.before_request
+def log_request():
+    print(f"📡 Request: [{request.method}] {request.path}")
 
 # ==========================================
 # 🤖 GEMINI CONFIGURATION
@@ -57,36 +61,67 @@ def identify_topics(text):
     model = get_gemini()
     if model:
         try:
-            prompt = f"Extract distinct topics from this syllabus text as a JSON array of strings. Return ONLY JSON. Syllabus:\n{text[:3000]}"
+            prompt = f"""
+            Identify and extract the main learning topics or key concepts from the following text.
+            The text might be a formal syllabus, a chapter summary, or a list of learning objectives.
+            
+            Strict Rules:
+            1. Extract distinct, high-level topics (max 15).
+            2. Each topic should be a SHORT, clear conceptual title (3-5 words max).
+            3. CRITICAL: Remove all labels like "UNIT I", "MODULE 1", "CHAPTER 1", "TOPIC 1.1", etc.
+            4. Remove metadata like "Page 1", "Session 2", dates, university names, or "Notes/Syllabus".
+            5. Remove course codes like "CS3491", "AI3001", etc.
+            6. NEVER include phrases like "You said", "Here are the topics", or any introductory text.
+            7. Return ONLY a JSON array of strings.
+            
+            Text:
+            {text[:5000]}
+            """
             response = model.generate_content(prompt)
-            topics = json.loads(response.text.replace('```json', '').replace('```', '').strip())
-            if isinstance(topics, list) and len(topics) > 0:
-                return topics
+            raw_response = response.text.replace('```json', '').replace('```', '').strip()
+            start = raw_response.find('[')
+            end = raw_response.rfind(']') + 1
+            if start != -1 and end != 0:
+                topics = json.loads(raw_response[start:end])
+                if isinstance(topics, list) and len(topics) > 0:
+                    cleaned = []
+                    for t in topics:
+                        t = str(t).strip()
+                        # Deep Cleaning
+                        t = re.sub(r'^(UNIT|MODULE|CHAPTER|TOPIC|SECTION|PART|LESSON)\s*[\d\.\-\:]*\s*', '', t, flags=re.IGNORECASE)
+                        t = re.sub(r'[A-Z]{2,}\d{3,}[A-Z]*', '', t) # Course codes like CS3491
+                        t = re.sub(r'(Syllabus|Notes|Course|University|Credit|Instructor|Hours)$', '', t, flags=re.IGNORECASE)
+                        t = re.sub(r'^[A-Z\d\.\-\s]+(?=[A-Z])', '', t) # Leading numbers/junk
+                        t = re.sub(r'\s+', ' ', t).strip()
+                        
+                        if t and len(t) > 3 and not any(phrase in t.lower() for phrase in ["you said", "here are", "identified", "topics"]):
+                            cleaned.append(t.capitalize())
+                    return cleaned[:20]
         except Exception as e:
             print(f"Gemini topic extraction failed: {str(e)}")
             
-    # Fallback
-    print("⚠️ Using Fallback Regex for Topic Extraction")
+    # Enhanced Fallback
     lines = text.split('\n')
     topics = []
     seen = set()
     for line in lines:
         line = line.strip()
-        # Allow shorter lines (e.g. "BFS", "DFS", "Math") - heavily relaxed constraint
-        if not line or len(line) < 3: 
-            continue
+        if not line or len(line) < 5: continue
+        
+        # Capture lines that look like topics
+        if (re.match(r'^(UNIT|MODULE|CHAPTER|TOPIC|SECTION)\s', line, re.IGNORECASE) or 
+            re.match(r'^[\d\.\-\*\•]+\s+[A-Z]', line) or 
+            (line[0].isupper() and len(line) < 80)):
             
-        # Skip likely non-topics (dates, page numbers, etc)
-        if re.match(r'^\d+$', line) or re.match(r'^page\s+\d+', line, re.IGNORECASE):
-            continue
+            t = re.sub(r'^[\d\.\-\*\•\s]+', '', line).strip()
+            t = re.sub(r'^(UNIT|MODULE|CHAPTER|TOPIC|SECTION)\s*[\d\.\-\:]*\s*', '', t, flags=re.IGNORECASE)
+            t = re.sub(r'[A-Z]{2,}\d{3,}[A-Z]*', '', t).strip()
             
-        if re.match(r'^(UNIT|MODULE|CHAPTER)\s', line, re.IGNORECASE) or len(line) < 100:
-            cleaned = re.sub(r'^[\d\.\)\-\*]+', '', line).strip()
+            cleaned = t.capitalize()
             if cleaned and cleaned not in seen and len(cleaned) > 2:
                 topics.append(cleaned)
                 seen.add(cleaned)
-                
-    print(f"Fallback extracted {len(topics)} topics: {topics[:5]}...")
+    
     return topics[:20]
 
 # ==========================================
@@ -94,22 +129,30 @@ def identify_topics(text):
 # ==========================================
 
 def analyze_dependencies(topics):
+    """
+    Builds a dependency graph. 
+    1. Implicitly assumes sequential topics in the text are related.
+    2. Uses Jaccard Similarity to find keywords overlaps.
+    """
     graph = {topic: [] for topic in topics}
     tokens = [set(re.findall(r'\w+', t.lower())) for t in topics]
     
+    # Keyword-based dependencies
     for i in range(len(topics)):
         for j in range(i + 1, len(topics)):
             if not tokens[i] or not tokens[j]: continue
-            similarity = len(tokens[i].intersection(tokens[j])) / len(tokens[i].union(tokens[j]))
-            if similarity > 0.2:
-                graph[topics[i]].append(topics[j])
-                
-    current_unit = None
-    for topic in topics:
-        if re.match(r'^(UNIT|MODULE|CHAPTER)', topic, re.IGNORECASE):
-            current_unit = topic
-        elif current_unit:
-            graph[current_unit].append(topic)
+            # If topics share significant words, assume dependency
+            intersection = tokens[i].intersection(tokens[j])
+            if len(intersection) >= 1:
+                similarity = len(intersection) / len(tokens[i].union(tokens[j]))
+                if similarity > 0.15:
+                    graph[topics[i]].append(topics[j])
+                    
+    # Sequential context dependency (Topic N is often a prerequisite for N+1)
+    for i in range(len(topics) - 1):
+        if topics[i+1] not in graph[topics[i]]:
+            graph[topics[i]].append(topics[i+1])
+            
     return graph
 
 def get_study_order(graph):
@@ -133,35 +176,63 @@ def get_study_order(graph):
             if node not in result: result.append(node)
     return result
 
+# Teacher's Insights & Resources Mapping
 MENTOR_TIPS = {
-    "introduction": "Understand the basics first.",
-    "neural": "Visualize the layers.",
-    "algorithm": "Practice small examples.",
-    "math": "Focus on the logic."
+    "introduction": "Don't just memorize definitions. Try to understand the 'Why' behind this field.",
+    "basic": "Strong foundations make complex topics easier. Spend extra time here if you're a beginner.",
+    "neural": "Think of this as biological inspiration. Visualize the layers and connections.",
+    "search": "Search algorithms are the heart of problem solving. Draw the search trees to visualize state space.",
+    "heuristic": "Heuristics are 'rules of thumb'. Think about how they estimate cost to goals.",
+    "logic": "Follow the flow step-by-step. Logical inference is about derivation from facts.",
+    "algorithm": "Practice with small examples first. Complexity matters more than syntax.",
+    "math": "Focus on the logic, not just the formulas. Use online calculators to verify.",
+    "probabilistic": "Probability handles uncertainty. Focus on Bayes' rule and conditional independence.",
+    "inference": "This is about drawing conclusions from data. It's the 'reasoning' part of AI.",
+    "hard": "Break this into 3 smaller chunks. Don't try to finish it in one sitting.",
+    "application": "Think about where you see this in your daily life like Google Maps or Siri."
 }
 
 def get_mentor_advice(topic):
     t_lower = topic.lower()
     for key, tip in MENTOR_TIPS.items():
         if key in t_lower: return tip
-    return "Focus on real-world applications."
+    return "Focus on understanding the core concepts through real-world examples and practice."
+
+def get_resource_links(topic):
+    query = topic.replace(' ', '+')
+    return [
+        {"name": "YouTube Tutorial", "url": f"https://www.youtube.com/results?search_query={query}+tutorial"},
+        {"name": "GeeksforGeeks", "url": f"https://www.google.com/search?q={query}+geeksforgeeks"},
+        {"name": "Lecture Notes", "url": f"https://www.google.com/search?q={query}+lecture+notes+pdf"},
+        {"name": "Interview Prep", "url": f"https://www.google.com/search?q={query}+interview+questions"},
+        {"name": "Wikipedia", "url": f"https://en.wikipedia.org/wiki/{query}"}
+    ]
 
 def classify_topics_fully(ordered_topics):
+    easy_keywords = ['introduction', 'basics', 'overview', 'concept', 'history', 'units', 'defintion', 'scope', 'applications']
+    hard_keywords = ['advanced', 'neural', 'optimization', 'complex', 'inference', 'backpropagation', 'bayesian', 'deep', 'logic', 'calculus', 'integration', 'heuristics', 'probabilistic', 'adversarial', 'learning']
+    
     topic_details = {}
     for topic in ordered_topics:
+        score = 2  # Default Medium
+        t_lower = topic.lower()
+        if any(kw in t_lower for kw in easy_keywords): score = 1
+        if any(kw in t_lower for kw in hard_keywords): score = 3
+        
         topic_details[topic] = {
-            "difficulty": 2, 
+            "difficulty": score, 
             "advice": get_mentor_advice(topic),
-            "resources": [
-                {"name": "YouTube", "url": f"https://www.youtube.com/results?search_query={topic.replace(' ','+')}"},
-                {"name": "Tutorial", "url": f"https://www.google.com/search?q={topic.replace(' ','+')}+tutorial"}
-            ]
+            "resources": get_resource_links(topic)
         }
     return topic_details
 
 def generate_schedule(ordered_topics, topic_details, weeks, hours, level):
-    weights = {1: 1, 2: 2, 3: 3}
-    if level == "Beginner": weights = {1: 2, 2: 3, 3: 4}
+    if level == "Beginner":
+        weights = {1: 2.5, 2: 3, 3: 4}
+    elif level == "Advanced":
+        weights = {1: 0.5, 2: 1.5, 3: 3}
+    else:  # Intermediate
+        weights = {1: 1, 2: 2, 3: 3}
     
     topic_weights = [(t, weights.get(topic_details[t]["difficulty"], 2)) for t in ordered_topics]
     total_weight = sum(w for _, w in topic_weights) or 1
@@ -175,17 +246,31 @@ def generate_schedule(ordered_topics, topic_details, weeks, hours, level):
         if curr_weight >= weight_per_week and w_num < weeks:
             schedule.append({"week": w_num, "topics": curr_topics})
             curr_topics, curr_weight, w_num = [], 0, w_num + 1
-    if curr_topics: schedule.append({"week": w_num, "topics": curr_topics})
+    
+    if curr_topics:
+        if w_num > weeks:
+            schedule[-1]["topics"].extend(curr_topics)
+        else:
+            schedule.append({"week": w_num, "topics": curr_topics})
     return schedule
 
 def chat_with_mentor(topic, message):
     model = get_gemini()
     if model:
         try:
-            prompt = f"As a mentor for {topic}, answer briefly: {message}"
+            prompt = f"""
+            You are a friendly and expert academic mentor. 
+            The student is studying "{topic}" and has a doubt.
+            
+            Student Question: "{message}"
+            
+            Provide a helpful, encouraging, and technically accurate response in 2-3 sentences.
+            If the question is unrelated to the topic, gently guide them back to studying.
+            """
             return model.generate_content(prompt).text.strip()
-        except: pass
-    return f"Focus on understanding the core concepts of {topic} through practice."
+        except Exception as e:
+            print(f"Chat error: {str(e)}")
+    return f"Focus on understanding the core concepts of {topic} through practice. Try checking the resources provided!"
 
 # ==========================================
 # 🌐 ROUTES
@@ -200,27 +285,51 @@ def chat():
     data = request.json or {}
     return jsonify({"response": chat_with_mentor(data.get('topic', 'General'), data.get('message', ''))})
 
-UPLOAD_FOLDER = '/tmp'
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({"error": "Path not found", "path": request.path}), 404
+
+# Determine the absolute path for uploads folder
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
 if not os.path.exists(UPLOAD_FOLDER): os.makedirs(UPLOAD_FOLDER)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 @app.route('/api/analyze', methods=['POST'])
 def analyze_syllabus():
     try:
-        if 'file' not in request.files: return jsonify({"error": "No file"}), 400
+        print("📥 Received analyze request")
+        if 'file' not in request.files: 
+            print("❌ No file in request")
+            return jsonify({"error": "No file"}), 400
         file = request.files['file']
-        if not file.filename: return jsonify({"error": "No filename"}), 400
+        if not file.filename: 
+            print("❌ No filename")
+            return jsonify({"error": "No filename"}), 400
         
         filename = secure_filename(file.filename)
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        print(f"💾 Saving file to {filepath}")
         file.save(filepath)
         
+        print("📄 Extracting text...")
         raw_text = extract_text_from_pdf(filepath) if filename.endswith('.pdf') else open(filepath, 'r', errors='ignore').read()
         cleaned_text = clean_text(raw_text)
+        
+        print("🤖 Identifying topics via Gemini...")
         topics = identify_topics(cleaned_text)
+        if not topics:
+            print("⚠️ No topics extracted, using fallback...")
+            topics = ["Introduction", "Core Concepts", "Advanced Modules", "Conclusion"]
+            
+        print(f"📊 Analyzing dependencies for {len(topics)} topics...")
         G = analyze_dependencies(topics)
         ordered_topics = get_study_order(G)
+        
+        print("🏷️ Classifying topics...")
         topic_details = classify_topics_fully(ordered_topics)
+        
+        print("📅 Generating schedule...")
         schedule = generate_schedule(ordered_topics, topic_details, 
                                      int(request.form.get('weeks', 4)), 
                                      int(request.form.get('hours', 10)), 
@@ -229,15 +338,20 @@ def analyze_syllabus():
         nodes = [{"id": n, "group": topic_details[n]["difficulty"]} for n in G]
         links = [{"source": u, "target": v} for u in G for v in G[u]]
         
+        print("✅ Analysis complete!")
         return jsonify({
             "topics": ordered_topics,
             "topic_details": topic_details,
             "schedule": schedule,
             "graph": {"nodes": nodes, "links": links},
-            "mentor_summary": "Path generated successfully!"
+            "mentor_summary": f"I've analyzed your content and created a {len(schedule)}-week strategic roadmap!"
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback
+        error_msg = str(e)
+        print(f"🔥 Server Error: {error_msg}")
+        print(traceback.format_exc())
+        return jsonify({"error": error_msg, "traceback": traceback.format_exc()}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
